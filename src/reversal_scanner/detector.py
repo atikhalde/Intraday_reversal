@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .models import Signal
@@ -270,30 +271,104 @@ def _evaluate_spring(
     )
 
 
-def detect_latest(
+def _sos_qualifies(frame: pd.DataFrame, sos_idx: int, config: dict[str, Any]) -> bool:
+    """Reject a non-SOS candle once before evaluating possible springs."""
+    sos = frame.iloc[sos_idx]
+    metrics = _candle_metrics(sos)
+    range_lookback = int(config["range_lookback_bars"])
+    range_window = (
+        frame.iloc[max(0, sos_idx - range_lookback) : sos_idx].high
+        - frame.iloc[max(0, sos_idx - range_lookback) : sos_idx].low
+    )
+    median_range = _median_positive(range_window, max(float(sos.high - sos.low), 0.01))
+    volume_lookback = int(config["volume_lookback_bars"])
+    median_volume = _median_positive(
+        frame.iloc[max(0, sos_idx - volume_lookback) : sos_idx].volume,
+        max(float(sos.volume), 1.0),
+    )
+    volume_ratio = _safe_ratio(float(sos.volume), median_volume)
+    previous_volume_ratio = _safe_ratio(
+        float(sos.volume),
+        float(frame.iloc[sos_idx - 1].volume),
+        99.0,
+    )
+    return (
+        float(sos.close) > float(sos.open)
+        and metrics["body_ratio"] >= float(config["sos_min_body_ratio"])
+        and _safe_ratio(metrics["range"], median_range)
+        >= float(config["sos_min_range_ratio"])
+        and (
+            volume_ratio >= float(config["sos_min_volume_ratio"])
+            or previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
+        )
+    )
+
+
+def _qualifying_sos_positions(frame: pd.DataFrame, config: dict[str, Any]) -> np.ndarray:
+    """Precompute possible SOS positions for one session using only prior bars."""
+    opens = frame["open"].to_numpy(dtype=float)
+    highs = frame["high"].to_numpy(dtype=float)
+    lows = frame["low"].to_numpy(dtype=float)
+    closes = frame["close"].to_numpy(dtype=float)
+    volumes = frame["volume"].to_numpy(dtype=float)
+    ranges = highs - lows
+    bodies = np.abs(closes - opens)
+    body_ratios = np.divide(bodies, ranges, out=np.zeros_like(bodies), where=ranges > 0)
+    qualifying = np.zeros(len(frame), dtype=bool)
+    range_lookback = int(config["range_lookback_bars"])
+    volume_lookback = int(config["volume_lookback_bars"])
+
+    for index in range(1, len(frame)):
+        if closes[index] <= opens[index] or body_ratios[index] < float(
+            config["sos_min_body_ratio"]
+        ):
+            continue
+        prior_ranges = ranges[max(0, index - range_lookback) : index]
+        positive_ranges = prior_ranges[prior_ranges > 0]
+        median_range = (
+            float(np.median(positive_ranges))
+            if positive_ranges.size
+            else max(float(ranges[index]), 0.01)
+        )
+        if _safe_ratio(float(ranges[index]), median_range) < float(
+            config["sos_min_range_ratio"]
+        ):
+            continue
+        prior_volumes = volumes[max(0, index - volume_lookback) : index]
+        positive_volumes = prior_volumes[prior_volumes > 0]
+        median_volume = (
+            float(np.median(positive_volumes))
+            if positive_volumes.size
+            else max(float(volumes[index]), 1.0)
+        )
+        volume_ratio = _safe_ratio(float(volumes[index]), median_volume)
+        previous_volume_ratio = _safe_ratio(
+            float(volumes[index]),
+            float(volumes[index - 1]),
+            99.0,
+        )
+        qualifying[index] = (
+            volume_ratio >= float(config["sos_min_volume_ratio"])
+            or previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
+        )
+    return qualifying
+
+
+def _detect_latest_session(
     symbol: str,
-    bars: pd.DataFrame,
+    frame: pd.DataFrame,
     config: dict[str, Any],
-    data_source: str = "unknown",
+    data_source: str,
+    *,
+    check_sos: bool = True,
 ) -> Signal | None:
-    """Detect a confirmed long reversal whose SOS is the final completed candle.
-
-    The algorithm uses only data at or before the final candle. It accepts the
-    full spring -> higher-low test -> no-supply -> SOS sequence, as well as a
-    faster hammer -> SOS confirmation variant.
-    """
-    frame = normalize_bars(bars)
-    if len(frame) < int(config["min_context_bars"]) + 2:
-        return None
-
-    # A provider request can span days. Intraday structure must never leak from
-    # a previous session into today's setup.
-    last_session = frame.index[-1].date()
-    frame = frame[[timestamp.date() == last_session for timestamp in frame.index]]
+    """Evaluate the final candle of one already-normalized trading session."""
     if len(frame) < int(config["min_context_bars"]) + 2:
         return None
 
     sos_idx = len(frame) - 1
+    if check_sos and not _sos_qualifies(frame, sos_idx, config):
+        return None
     first_spring = max(
         int(config["min_context_bars"]),
         sos_idx - int(config["max_setup_bars"]),
@@ -312,7 +387,7 @@ def detect_latest(
     spring = frame.iloc[candidate.spring_index]
     sos = frame.iloc[sos_idx]
     ranges = frame.high - frame.low
-    atr = _median_positive(ranges.iloc[max(0, sos_idx - 14):sos_idx], float(sos.high - sos.low))
+    atr = _median_positive(ranges.iloc[max(0, sos_idx - 14) : sos_idx], float(sos.high - sos.low))
     buffer_value = atr * float(config["stop_atr_buffer"])
     full_invalidation = max(0.0, float(spring.low) - buffer_value)
     immediate_failure = min(candidate.pivot_high, float(sos.low))
@@ -339,17 +414,52 @@ def detect_latest(
     )
 
 
+def detect_latest(
+    symbol: str,
+    bars: pd.DataFrame,
+    config: dict[str, Any],
+    data_source: str = "unknown",
+) -> Signal | None:
+    """Detect a confirmed long reversal whose SOS is the final completed candle.
+
+    The algorithm uses only data at or before the final candle. It accepts the
+    full spring -> higher-low test -> no-supply -> SOS sequence, as well as a
+    faster hammer -> SOS confirmation variant.
+    """
+    frame = normalize_bars(bars)
+    if frame.empty:
+        return None
+
+    # A provider request can span days. Intraday structure must never leak from
+    # a previous session into today's setup.
+    last_session = frame.index[-1].date()
+    frame = frame[[timestamp.date() == last_session for timestamp in frame.index]]
+    return _detect_latest_session(symbol, frame, config, data_source)
+
+
 def scan_history(
     symbol: str,
     bars: pd.DataFrame,
     config: dict[str, Any],
     data_source: str = "csv",
 ) -> list[Signal]:
-    """Walk forward through bars without look-ahead and return every signal."""
+    """Walk forward once per session without look-ahead and return every signal."""
     frame = normalize_bars(bars)
     signals: list[Signal] = []
-    for end in range(int(config["min_context_bars"]) + 1, len(frame)):
-        signal = detect_latest(symbol, frame.iloc[: end + 1], config, data_source)
-        if signal and (not signals or signal.key != signals[-1].key):
-            signals.append(signal)
+    first_confirmation = int(config["min_context_bars"]) + 1
+    session_dates = pd.DatetimeIndex(frame.index).date
+    for _session_date, session in frame.groupby(session_dates, sort=False):
+        qualifying_sos = _qualifying_sos_positions(session, config)
+        for end in range(first_confirmation, len(session)):
+            if not qualifying_sos[end]:
+                continue
+            signal = _detect_latest_session(
+                symbol,
+                session.iloc[: end + 1],
+                config,
+                data_source,
+                check_sos=False,
+            )
+            if signal and (not signals or signal.key != signals[-1].key):
+                signals.append(signal)
     return signals

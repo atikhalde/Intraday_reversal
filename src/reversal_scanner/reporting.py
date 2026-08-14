@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from reportlab.platypus import (
 
 from .detector import scan_history
 from .models import Signal
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,10 +147,19 @@ def evaluate_datasets(
     filters: dict | None = None,
 ) -> list[EvaluatedSignal]:
     evaluated: list[EvaluatedSignal] = []
-    for symbol, (bars, source) in sorted(datasets.items()):
+    ordered_datasets = sorted(datasets.items())
+    total = len(ordered_datasets)
+    for number, (symbol, (bars, source)) in enumerate(ordered_datasets, start=1):
         for signal in scan_history(symbol, bars, strategy_config, source):
             if _passes_historical_filters(signal, bars, filters):
                 evaluated.append(evaluate_signal(signal, bars))
+        if number % 25 == 0 or number == total:
+            LOGGER.info(
+                "Analyzed %d/%d historical data set(s); %d qualifying signal(s)",
+                number,
+                total,
+                len(evaluated),
+            )
     return sorted(evaluated, key=lambda item: (item.signal.timestamp, item.signal.symbol))
 
 
