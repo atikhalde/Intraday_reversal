@@ -374,20 +374,30 @@ def generate_pdf_report(
             signal = record.signal
             story.append(
                 Paragraph(
-                    f"{number}. {_ascii(signal.symbol)} - {_ascii(signal.pattern)} at "
-                    f"{signal.timestamp.strftime('%Y-%m-%d %H:%M')}",
+                    f"{number}. {_ascii(signal.symbol)} - {_ascii(signal.pattern)} | "
+                    f"Score {signal.score}/100 | {signal.timestamp.strftime('%Y-%m-%d %H:%M')}",
                     styles["Heading3"],
                 )
             )
-            details = (
-                f"Spring: {signal.spring_time.strftime('%H:%M')} at INR "
-                f"{signal.spring_low:.2f} | Confirmation: INR "
-                f"{signal.confirmation_price:.2f} | Pivot/retest: INR {signal.pivot_high:.2f} | "
+            levels = (
+                f"Spring: {signal.spring_time.strftime('%Y-%m-%d %H:%M')} at INR "
+                f"{signal.spring_low:.2f} | Confirmation: INR {signal.confirmation_price:.2f} | "
+                f"Broken pivot / retest: INR {signal.pivot_high:.2f} | "
                 f"Immediate failure: INR {signal.immediate_failure:.2f} | "
                 f"Full invalidation: INR {signal.full_invalidation:.2f} | "
+                f"Target 1R / 2R: INR {signal.target_1r:.2f} / INR {signal.target_2r:.2f}"
+            )
+            outcome = (
+                f"Outcome: {_ascii(record.outcome)} | MFE: {record.mfe_r:.2f}R | "
+                f"MAE: {record.mae_r:.2f}R | Bars observed: {record.bars_observed} | "
+                f"1R reached: {'Yes' if record.reached_1r else 'No'} | "
+                f"2R reached: {'Yes' if record.reached_2r else 'No'} | "
+                f"Full stop hit: {'Yes' if record.stopped else 'No'} | "
                 f"Data: {_ascii(signal.data_source)}"
             )
-            story.append(Paragraph(details, styles["SmallBody"]))
+            story.append(Paragraph(levels, styles["SmallBody"]))
+            story.append(Paragraph(outcome, styles["SmallBody"]))
+            story.append(Paragraph("<b>Why it fired</b>", styles["SmallBody"]))
             for reason in signal.reasons:
                 story.append(Paragraph(f"- {_ascii(reason)}", styles["SmallBody"]))
             story.append(Spacer(1, 3 * mm))

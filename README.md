@@ -144,15 +144,17 @@ reversal-scanner backtest-report \
   --results-csv artifacts/backtest-results.csv
 ```
 
-Production Dhan run for current Nifty 500 constituents:
+Production Dhan run for all current Nifty 500 constituents:
 
 ```bash
 reversal-scanner backtest-report \
   --source dhan \
-  --symbols RELIANCE,TCS,INFY \
-  --start 2026-08-03 \
-  --end 2026-08-07
+  --symbols NSE_NIFTY_500 \
+  --start 2026-07-14 \
+  --end 2026-08-14
 ```
+
+`NSE_NIFTY_500` expands to the complete bundled 500-stock universe. A comma-separated list such as `RELIANCE,TCS,INFY` remains supported for a narrower report.
 
 Dhan is attempted once per symbol. Any failed symbol is submitted directly to yfinance with no retry, backoff, or intentional delay. Yahoo five-minute history has a short retention window, so Dhan is the appropriate source for older ranges.
 
@@ -181,9 +183,9 @@ Create these repository secrets under **Settings → Secrets and variables → A
 The repository has CI plus these **two operational workflows**, listed in Actions with numbered names:
 
 1. **`1 - Intraday scanner`** — manual dispatch and a weekday five-minute schedule. Scheduled runs use Dhan and Telegram. For a credential-free manual smoke test choose `provider: yfinance`, `dry_run: true`, and a small `max_symbols` value. To verify Telegram end to end, set `sample_alert: true`; this replays the ORCHPHARMA fixture and sends a prominent **SAMPLE TEST — NOT A LIVE SIGNAL** alert without requiring Dhan.
-2. **`2 - Past backtest PDF`** — manual historical walk-forward run with source, comma-separated symbols, start date, and inclusive end date inputs. It always uploads `backtest-report.pdf` and `backtest-results.csv` as the `past-backtest-<run number>` artifact retained for 30 days.
+2. **`2 - Past backtest PDF`** — manual historical walk-forward run. It defaults to Dhan with immediate yfinance fallback and `NSE_NIFTY_500`, while start and end dates are intentionally blank for manual selection. It always uploads `backtest-report.pdf` and `backtest-results.csv` as the `past-backtest-<run number>` artifact retained for 30 days. The PDF includes each alert's score, spring, confirmation, broken pivot/retest, immediate failure, full invalidation, 1R/2R targets, trigger reasons, provider, MFE/MAE, and same-session outcome.
 
-To verify PDF generation without any secrets, open **Actions → 2 - Past backtest PDF → Run workflow**, retain the default `fixture` source and dates, and run it. When it completes, open the run summary, scroll to **Artifacts**, and download the `past-backtest-<run number>` ZIP. For a production backtest select `dhan`, use current Nifty 500 symbols, choose the dates, and ensure the two Dhan repository secrets are configured. Selecting `yfinance` is also credential-free but its five-minute retention is provider-limited.
+For a production backtest, open **Actions → 2 - Past backtest PDF → Run workflow**, retain `dhan` and `NSE_NIFTY_500`, enter the required dates, and run it. Dhan repository secrets must be configured. Selecting `yfinance` is credential-free but its five-minute retention is provider-limited. The deterministic fixture option remains available only for `ORCHPHARMA` with dates covering `2026-06-16`.
 
 `CI` separately runs lint, the automated suite, PDF parsing checks, and the ORCHPHARMA walk-forward regression on pushes and pull requests.
 

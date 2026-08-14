@@ -49,7 +49,16 @@ def test_writes_downloadable_pdf_and_csv(tmp_path: Path) -> None:
     )
     assert pdf_path.read_bytes().startswith(b"%PDF-")
     assert pdf_path.stat().st_size > 4_000
-    assert len(PdfReader(pdf_path).pages) >= 2
+    reader = PdfReader(pdf_path)
+    assert len(reader.pages) >= 2
+    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert "Score 100/100" in pdf_text
+    assert "Broken pivot / retest" in pdf_text
+    assert "Immediate failure" in pdf_text
+    assert "Full invalidation" in pdf_text
+    assert "Target 1R / 2R" in pdf_text
+    assert "Why it fired" in pdf_text
+    assert "Outcome: 2R reached" in pdf_text
     results = pd.read_csv(csv_path)
     assert results.loc[0, "outcome"] == "2R reached"
     assert bool(results.loc[0, "reached_2r"])

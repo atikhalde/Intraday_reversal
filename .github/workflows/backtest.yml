@@ -4,28 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: Fixture needs no credentials; Dhan falls back immediately to yfinance
+        description: Dhan credentials first; failed symbols fall back immediately to yfinance
         required: true
-        default: fixture
+        default: dhan
         type: choice
         options:
-          - fixture
           - dhan
           - yfinance
+          - fixture
       symbols:
-        description: Comma-separated NSE symbols (fixture mode uses ORCHPHARMA only)
+        description: NSE_NIFTY_500 for all 500 stocks, or comma-separated symbols; fixture uses ORCHPHARMA
         required: true
-        default: ORCHPHARMA
+        default: NSE_NIFTY_500
         type: string
       start_date:
-        description: First session, YYYY-MM-DD
+        description: First session, YYYY-MM-DD (required)
         required: true
-        default: "2026-06-16"
         type: string
       end_date:
-        description: Last session, YYYY-MM-DD (inclusive)
+        description: Last session, YYYY-MM-DD, inclusive (required)
         required: true
-        default: "2026-06-16"
         type: string
 
 permissions:
@@ -54,13 +52,19 @@ jobs:
           cache: pip
       - name: Install scanner
         run: python -m pip install --upgrade pip && pip install .
-      - name: Validate Dhan secrets when selected
+      - name: Validate inputs and Dhan secrets
         shell: bash
         run: |
           set -euo pipefail
+          test -n "$INPUT_START" || { echo "Start date is required"; exit 1; }
+          test -n "$INPUT_END" || { echo "End date is required"; exit 1; }
           if [[ "$INPUT_SOURCE" == "dhan" ]]; then
             test -n "$DHAN_CLIENT_ID" || { echo "Missing DHAN_CLIENT_ID secret"; exit 1; }
             test -n "$DHAN_ACCESS_TOKEN" || { echo "Missing DHAN_ACCESS_TOKEN secret"; exit 1; }
+          fi
+          if [[ "$INPUT_SOURCE" == "fixture" && "${INPUT_SYMBOLS^^}" != "ORCHPHARMA" ]]; then
+            echo "Fixture mode is the ORCHPHARMA 2026-06-16 demo; set symbols to ORCHPHARMA"
+            exit 1
           fi
       - name: Run walk-forward historical backtest
         shell: bash

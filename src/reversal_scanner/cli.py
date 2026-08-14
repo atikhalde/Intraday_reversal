@@ -61,7 +61,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Fetch past five-minute data and create PDF/CSV backtest artifacts",
     )
     report.add_argument("--source", choices=["dhan", "yfinance", "fixture"], default="dhan")
-    report.add_argument("--symbols", required=True, help="Comma-separated NSE symbols")
+    report.add_argument(
+        "--symbols",
+        required=True,
+        help="Comma-separated NSE symbols, or NSE_NIFTY_500 for the full bundled universe",
+    )
     report.add_argument("--start", type=date.fromisoformat, required=True, help="YYYY-MM-DD")
     report.add_argument(
         "--end", type=date.fromisoformat, required=True, help="YYYY-MM-DD, inclusive"
@@ -190,7 +194,10 @@ def _run_backtest(args: argparse.Namespace, config: dict) -> int:
     return 0
 
 
-def _requested_symbols(value: str) -> list[str]:
+def _requested_symbols(value: str, universe_path: str | None = None) -> list[str]:
+    marker = " ".join(value.strip().upper().replace("_", " ").replace("-", " ").split())
+    if marker in {"NSE NIFTY 500", "NIFTY 500", "NIFTY500", "ALL"}:
+        return [instrument.symbol for instrument in load_nifty500(universe_path)]
     symbols = list(
         dict.fromkeys(symbol.strip().upper() for symbol in value.split(",") if symbol.strip())
     )
@@ -236,7 +243,7 @@ def _fixture_dataset(
 def _run_backtest_report(args: argparse.Namespace, config: dict) -> int:
     if args.end < args.start:
         raise RuntimeError("--end must not be before --start")
-    symbols = _requested_symbols(args.symbols)
+    symbols = _requested_symbols(args.symbols, args.universe)
     errors: dict[str, str] = {}
     if args.source == "fixture":
         datasets = _fixture_dataset(args, symbols)

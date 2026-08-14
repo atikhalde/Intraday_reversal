@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from reversal_scanner.cli import _requested_symbols
 from reversal_scanner.models import Signal
 from reversal_scanner.telegram import TelegramNotifier
 from reversal_scanner.universe import load_nifty500
@@ -31,6 +32,13 @@ def test_bundled_universe_has_exactly_500_unique_mapped_stocks() -> None:
     assert all(instrument.security_id for instrument in instruments)
     assert all(instrument.yfinance_symbol.endswith(".NS") for instrument in instruments)
     assert "RELIANCE" in {instrument.symbol for instrument in instruments}
+
+
+def test_nifty500_backtest_marker_expands_to_full_universe() -> None:
+    symbols = _requested_symbols("NSE_NIFTY_500")
+    assert len(symbols) == 500
+    assert len(set(symbols)) == 500
+    assert "RELIANCE" in symbols
 
 
 def test_telegram_message_contains_actionable_structure() -> None:
