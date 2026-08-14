@@ -1,3 +1,4 @@
+import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -5,6 +6,7 @@ import pandas as pd
 
 from reversal_scanner.data.common import DataFetchError, drop_incomplete_bars
 from reversal_scanner.data.coordinator import MarketDataCoordinator
+from reversal_scanner.data.yahoo import YahooDataProvider
 from reversal_scanner.historical import fetch_historical
 from reversal_scanner.models import Instrument
 
@@ -101,3 +103,29 @@ def test_historical_dhan_failure_immediately_uses_yahoo() -> None:
     assert yahoo.calls == 1
     assert results["AAA"][1] == "yfinance"
     assert errors == {}
+
+
+def test_yahoo_hard_deadline_skips_a_stuck_batch_without_retry(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[list[str]] = []
+
+    def fake_download(**kwargs):  # noqa: ANN003, ANN202
+        calls.append(kwargs["tickers"])
+        if kwargs["tickers"] == ["AAA.NS"]:
+            time.sleep(1)
+        return sample_frame()
+
+    monkeypatch.setattr("reversal_scanner.data.yahoo.yf.download", fake_download)
+    provider = YahooDataProvider(
+        timeout_seconds=0.01,
+        batch_size=1,
+        batch_timeout_seconds=0.05,
+    )
+    started = time.monotonic()
+    results = provider.fetch_many(
+        [Instrument("AAA", "1", "AAA.NS"), Instrument("BBB", "2", "BBB.NS")]
+    )
+    elapsed = time.monotonic() - started
+
+    assert calls == [["AAA.NS"], ["BBB.NS"]]
+    assert set(results) == {"BBB"}
+    assert elapsed < 0.5

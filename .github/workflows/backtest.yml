@@ -36,7 +36,7 @@ concurrency:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
       DHAN_ACCESS_TOKEN: ${{ secrets.DHAN_ACCESS_TOKEN }}

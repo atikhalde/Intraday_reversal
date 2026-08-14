@@ -10,7 +10,7 @@ It also recognizes the faster **hammer/spring → full-bodied confirmation** var
 
 - **Universe:** exactly 500 current Nifty 500 symbols, mapped to Dhan security IDs and Yahoo `.NS` symbols.
 - **Primary candles:** Dhan v2 five-minute intraday historical API.
-- **Immediate fallback:** each Dhan request has a one-second timeout, zero retries, and zero retry backoff. Failed symbols are passed straight to a batched yfinance request.
+- **Immediate fallback:** each Dhan request has a one-second timeout, zero retries, and zero retry backoff. Failed symbols are passed straight to a single-attempt batched yfinance request with an isolated cache and hard per-batch deadline.
 - **No look-ahead:** only completed five-minute candles are analyzed.
 - **Walk-forward detector:** every historical test evaluates only information available at that candle.
 - **Telegram alerts:** setup score, confirmation, broken pivot/retest level, immediate failure, full invalidation, and 1R/2R reference levels.
@@ -156,7 +156,7 @@ reversal-scanner backtest-report \
 
 `NSE_NIFTY_500` expands to the complete bundled 500-stock universe. A comma-separated list such as `RELIANCE,TCS,INFY` remains supported for a narrower report.
 
-Dhan is attempted once per symbol. Any failed symbol is submitted directly to yfinance with no retry, backoff, or intentional delay. Yahoo five-minute history has a short retention window, so Dhan is the appropriate source for older ranges.
+Dhan is attempted once per symbol. Any failed symbol is submitted directly to yfinance with no retry, backoff, or intentional delay. Yahoo uses a process-isolated cache and a hard deadline for each single-attempt batch so a stalled library call cannot block an entire workflow. Yahoo five-minute history has a short retention window, so Dhan is the appropriate source for older ranges.
 
 The report evaluates only candles after each confirmation and within the same session. It records whether 1R, 2R, or full invalidation was reached, plus maximum favorable/adverse excursion. If a single five-minute candle touches both a target and stop, the report conservatively counts the stop first because OHLC data does not reveal intrabar order. These statistics exclude costs, slippage, partial exits, and position sizing.
 
