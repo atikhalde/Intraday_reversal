@@ -153,6 +153,8 @@ Two workflows are included:
 - `CI`: lint, eight automated tests, and the ORCHPHARMA walk-forward regression.
 - `Intraday scanner`: manual dispatch and a weekday five-minute schedule.
 
+For a credential-free workflow smoke test, manually choose `provider: yfinance`, `dry_run: true`, and a small `max_symbols` value. Scheduled production runs always default to Dhan.
+
 The scheduled workflow starts one minute after nominal candle boundaries and exits without provider calls outside the NSE scan window.
 
 ### Important scheduling limitation
