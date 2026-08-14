@@ -52,8 +52,13 @@ class TelegramNotifier:
             payload = response.json()
             if not payload.get("ok"):
                 raise RuntimeError("Telegram rejected the alert")
-        except (requests.RequestException, ValueError) as exc:
-            raise RuntimeError("Telegram alert delivery failed") from exc
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            raise RuntimeError(f"Telegram alert delivery failed (HTTP {status})") from exc
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Telegram alert delivery failed ({type(exc).__name__})") from exc
+        except ValueError as exc:
+            raise RuntimeError("Telegram returned an invalid response") from exc
 
     def send(self, signal: Signal) -> None:
         self._send_text(self.format_signal(signal))
