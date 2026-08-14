@@ -14,12 +14,14 @@ dependencies = [
   "numpy>=1.26,<3",
   "pandas>=2.2,<4",
   "PyYAML>=6.0,<7",
+  "reportlab>=4.2,<5",
   "requests>=2.32,<3",
   "yfinance>=0.2.65,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "pypdf>=5.0,<7",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
   "ruff>=0.9,<1",

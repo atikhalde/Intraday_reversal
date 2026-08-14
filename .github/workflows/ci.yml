@@ -26,3 +26,12 @@ jobs:
         run: pytest --cov=reversal_scanner --cov-report=term-missing
       - name: ORCHPHARMA walk-forward smoke test
         run: reversal-scanner backtest tests/fixtures/orchpharma_2026-06-16_5m.csv --symbol ORCHPHARMA
+      - name: Credential-free PDF report smoke test
+        run: |
+          reversal-scanner backtest-report \
+            --source fixture \
+            --symbols ORCHPHARMA \
+            --start 2026-06-16 \
+            --end 2026-06-16 \
+            --fixture tests/fixtures/orchpharma_2026-06-16_5m.csv
+          python -c "from pypdf import PdfReader; assert len(PdfReader('artifacts/backtest-report.pdf').pages) >= 2"

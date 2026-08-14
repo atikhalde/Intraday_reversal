@@ -1,0 +1,90 @@
+name: 2 - Past backtest PDF
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Fixture needs no credentials; Dhan falls back immediately to yfinance
+        required: true
+        default: fixture
+        type: choice
+        options:
+          - fixture
+          - dhan
+          - yfinance
+      symbols:
+        description: Comma-separated NSE symbols (fixture mode uses ORCHPHARMA only)
+        required: true
+        default: ORCHPHARMA
+        type: string
+      start_date:
+        description: First session, YYYY-MM-DD
+        required: true
+        default: "2026-06-16"
+        type: string
+      end_date:
+        description: Last session, YYYY-MM-DD (inclusive)
+        required: true
+        default: "2026-06-16"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: past-backtest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
+      DHAN_ACCESS_TOKEN: ${{ secrets.DHAN_ACCESS_TOKEN }}
+      INPUT_SOURCE: ${{ inputs.source }}
+      INPUT_SYMBOLS: ${{ inputs.symbols }}
+      INPUT_START: ${{ inputs.start_date }}
+      INPUT_END: ${{ inputs.end_date }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install scanner
+        run: python -m pip install --upgrade pip && pip install .
+      - name: Validate Dhan secrets when selected
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$INPUT_SOURCE" == "dhan" ]]; then
+            test -n "$DHAN_CLIENT_ID" || { echo "Missing DHAN_CLIENT_ID secret"; exit 1; }
+            test -n "$DHAN_ACCESS_TOKEN" || { echo "Missing DHAN_ACCESS_TOKEN secret"; exit 1; }
+          fi
+      - name: Run walk-forward historical backtest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          args=(backtest-report
+            --source "$INPUT_SOURCE"
+            --symbols "$INPUT_SYMBOLS"
+            --start "$INPUT_START"
+            --end "$INPUT_END"
+            --output-pdf artifacts/backtest-report.pdf
+            --results-csv artifacts/backtest-results.csv)
+          if [[ "$INPUT_SOURCE" == "fixture" ]]; then
+            args+=(--fixture tests/fixtures/orchpharma_2026-06-16_5m.csv)
+          fi
+          reversal-scanner "${args[@]}"
+      - name: Upload PDF report and detailed CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: past-backtest-${{ github.run_number }}
+          path: |
+            artifacts/backtest-report.pdf
+            artifacts/backtest-results.csv
+          if-no-files-found: error
+          retention-days: 30

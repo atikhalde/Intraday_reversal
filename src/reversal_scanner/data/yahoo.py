@@ -44,6 +44,21 @@ class YahooDataProvider:
         return selected.sort_index()
 
     def fetch_many(self, instruments: Sequence[Instrument]) -> dict[str, pd.DataFrame]:
+        return self._download(instruments, period="5d")
+
+    def fetch_range_many(
+        self,
+        instruments: Sequence[Instrument],
+        start: str,
+        end: str,
+    ) -> dict[str, pd.DataFrame]:
+        return self._download(instruments, start=start, end=end)
+
+    def _download(
+        self,
+        instruments: Sequence[Instrument],
+        **date_arguments: str,
+    ) -> dict[str, pd.DataFrame]:
         results: dict[str, pd.DataFrame] = {}
         for offset in range(0, len(instruments), self.batch_size):
             batch = list(instruments[offset : offset + self.batch_size])
@@ -51,7 +66,6 @@ class YahooDataProvider:
             try:
                 raw = yf.download(
                     tickers=tickers,
-                    period="5d",
                     interval="5m",
                     group_by="ticker",
                     auto_adjust=False,
@@ -59,6 +73,7 @@ class YahooDataProvider:
                     threads=True,
                     progress=False,
                     timeout=self.timeout_seconds,
+                    **date_arguments,
                 )
             except Exception:  # yfinance raises several backend-specific exception types
                 continue

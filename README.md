@@ -15,7 +15,8 @@ It also recognizes the faster **hammer/spring → full-bodied confirmation** var
 - **Walk-forward detector:** every historical test evaluates only information available at that candle.
 - **Telegram alerts:** setup score, confirmation, broken pivot/retest level, immediate failure, full invalidation, and 1R/2R reference levels.
 - **Deduplication:** local signal keys are retained for seven days.
-- **Automation:** CI plus a scheduled/manual scanner GitHub Actions workflow.
+- **Automation:** CI plus two clearly named operational workflows: live intraday scanning and past-data PDF backtesting.
+- **Backtest artifacts:** walk-forward signal outcomes, MFE/MAE in R, a readable PDF report, and a detailed CSV.
 
 ## Pattern logic
 
@@ -128,6 +129,35 @@ reversal-scanner backtest tests/fixtures/orchpharma_2026-06-16_5m.csv \
   --symbol ORCHPHARMA
 ```
 
+### Generate a historical PDF report locally
+
+Credential-free deterministic fixture run:
+
+```bash
+reversal-scanner backtest-report \
+  --source fixture \
+  --symbols ORCHPHARMA \
+  --start 2026-06-16 \
+  --end 2026-06-16 \
+  --fixture tests/fixtures/orchpharma_2026-06-16_5m.csv \
+  --output-pdf artifacts/backtest-report.pdf \
+  --results-csv artifacts/backtest-results.csv
+```
+
+Production Dhan run for current Nifty 500 constituents:
+
+```bash
+reversal-scanner backtest-report \
+  --source dhan \
+  --symbols RELIANCE,TCS,INFY \
+  --start 2026-08-03 \
+  --end 2026-08-07
+```
+
+Dhan is attempted once per symbol. Any failed symbol is submitted directly to yfinance with no retry, backoff, or intentional delay. Yahoo five-minute history has a short retention window, so Dhan is the appropriate source for older ranges.
+
+The report evaluates only candles after each confirmation and within the same session. It records whether 1R, 2R, or full invalidation was reached, plus maximum favorable/adverse excursion. If a single five-minute candle touches both a target and stop, the report conservatively counts the stop first because OHLC data does not reveal intrabar order. These statistics exclude costs, slippage, partial exits, and position sizing.
+
 ## Telegram setup
 
 For an existing bot:
@@ -148,14 +178,16 @@ Create these repository secrets under **Settings → Secrets and variables → A
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Two workflows are included:
+The repository has CI plus these **two operational workflows**, listed in Actions with numbered names:
 
-- `CI`: lint, eight automated tests, and the ORCHPHARMA walk-forward regression.
-- `Intraday scanner`: manual dispatch and a weekday five-minute schedule.
+1. **`1 - Intraday scanner`** — manual dispatch and a weekday five-minute schedule. Scheduled runs use Dhan and Telegram. For a credential-free manual smoke test choose `provider: yfinance`, `dry_run: true`, and a small `max_symbols` value.
+2. **`2 - Past backtest PDF`** — manual historical walk-forward run with source, comma-separated symbols, start date, and inclusive end date inputs. It always uploads `backtest-report.pdf` and `backtest-results.csv` as the `past-backtest-<run number>` artifact retained for 30 days.
 
-For a credential-free workflow smoke test, manually choose `provider: yfinance`, `dry_run: true`, and a small `max_symbols` value. Scheduled production runs always default to Dhan.
+To verify PDF generation without any secrets, open **Actions → 2 - Past backtest PDF → Run workflow**, retain the default `fixture` source and dates, and run it. When it completes, open the run summary, scroll to **Artifacts**, and download the `past-backtest-<run number>` ZIP. For a production backtest select `dhan`, use current Nifty 500 symbols, choose the dates, and ensure the two Dhan repository secrets are configured. Selecting `yfinance` is also credential-free but its five-minute retention is provider-limited.
 
-The scheduled workflow starts one minute after nominal candle boundaries and exits without provider calls outside the NSE scan window.
+`CI` separately runs lint, the automated suite, PDF parsing checks, and the ORCHPHARMA walk-forward regression on pushes and pull requests.
+
+The intraday scheduled workflow starts one minute after nominal candle boundaries and exits without provider calls outside the NSE scan window.
 
 ### Important scheduling limitation
 
@@ -217,8 +249,10 @@ Tests cover:
 - no alert before 13:35;
 - no dependency on the later news spike;
 - the faster hammer-confirmation variant;
-- one-attempt Dhan → immediate Yahoo fallback behavior;
+- one-attempt Dhan → immediate Yahoo fallback behavior for live and historical ranges;
 - incomplete-candle removal;
+- PDF/CSV report generation and PDF parsing;
+- post-signal 1R/2R outcome evaluation;
 - 500 unique mapped constituents; and
 - Telegram alert structure.
 

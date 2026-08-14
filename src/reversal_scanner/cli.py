@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time as time_module
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -12,7 +12,10 @@ import pandas as pd
 from .config import load_config, required_env
 from .data import DhanDataProvider, MarketDataCoordinator, YahooDataProvider
 from .data.common import DataFetchError
-from .detector import scan_history
+from .detector import normalize_bars, scan_history
+from .historical import fetch_historical
+from .models import Instrument
+from .reporting import evaluate_datasets, generate_pdf_report, write_results_csv
 from .scanner import ReversalScanner, market_is_scannable
 from .state import SignalState
 from .telegram import TelegramNotifier
@@ -47,6 +50,22 @@ def _parser() -> argparse.ArgumentParser:
     backtest.add_argument("csv", type=Path)
     backtest.add_argument("--symbol", required=True)
     backtest.add_argument("--datetime-column", default="datetime_IST")
+
+    report = subparsers.add_parser(
+        "backtest-report",
+        help="Fetch past five-minute data and create PDF/CSV backtest artifacts",
+    )
+    report.add_argument("--source", choices=["dhan", "yfinance", "fixture"], default="dhan")
+    report.add_argument("--symbols", required=True, help="Comma-separated NSE symbols")
+    report.add_argument("--start", type=date.fromisoformat, required=True, help="YYYY-MM-DD")
+    report.add_argument(
+        "--end", type=date.fromisoformat, required=True, help="YYYY-MM-DD, inclusive"
+    )
+    report.add_argument("--output-pdf", type=Path, default=Path("artifacts/backtest-report.pdf"))
+    report.add_argument("--results-csv", type=Path, default=Path("artifacts/backtest-results.csv"))
+    report.add_argument("--fixture", type=Path, help="OHLCV CSV used by source=fixture")
+    report.add_argument("--datetime-column", default="datetime_IST")
+    report.add_argument("--universe", help="Override the bundled universe CSV")
     return parser
 
 
@@ -157,6 +176,105 @@ def _run_backtest(args: argparse.Namespace, config: dict) -> int:
     return 0
 
 
+def _requested_symbols(value: str) -> list[str]:
+    symbols = list(
+        dict.fromkeys(symbol.strip().upper() for symbol in value.split(",") if symbol.strip())
+    )
+    if not symbols:
+        raise RuntimeError("At least one symbol is required")
+    return symbols
+
+
+def _historical_instruments(args: argparse.Namespace, symbols: list[str]) -> list[Instrument]:
+    universe = {instrument.symbol: instrument for instrument in load_nifty500(args.universe)}
+    missing = set(symbols) - set(universe)
+    if missing:
+        raise RuntimeError(f"Symbols are not in the bundled Nifty 500: {sorted(missing)}")
+    return [universe[symbol] for symbol in symbols]
+
+
+def _fixture_dataset(
+    args: argparse.Namespace,
+    symbols: list[str],
+) -> dict[str, tuple[pd.DataFrame, str]]:
+    if args.fixture is None:
+        raise RuntimeError("--fixture is required for source=fixture")
+    if len(symbols) != 1:
+        raise RuntimeError("Fixture mode accepts exactly one symbol per CSV")
+    frame = pd.read_csv(args.fixture)
+    if args.datetime_column not in frame:
+        raise RuntimeError(f"CSV has no datetime column {args.datetime_column!r}")
+    frame.index = pd.to_datetime(frame.pop(args.datetime_column), errors="raise")
+    frame = normalize_bars(frame)
+    timezone = ZoneInfo("Asia/Kolkata")
+    start = datetime.combine(args.start, time.min, timezone)
+    end = datetime.combine(args.end, time.max, timezone)
+    index = pd.DatetimeIndex(frame.index)
+    if index.tz is None:
+        start = start.replace(tzinfo=None)
+        end = end.replace(tzinfo=None)
+    frame = frame[(frame.index >= start) & (frame.index <= end)]
+    if frame.empty:
+        raise RuntimeError("Fixture contains no bars in the requested date range")
+    return {symbols[0]: (frame, "fixture")}
+
+
+def _run_backtest_report(args: argparse.Namespace, config: dict) -> int:
+    if args.end < args.start:
+        raise RuntimeError("--end must not be before --start")
+    symbols = _requested_symbols(args.symbols)
+    errors: dict[str, str] = {}
+    if args.source == "fixture":
+        datasets = _fixture_dataset(args, symbols)
+    else:
+        instruments = _historical_instruments(args, symbols)
+        provider_cfg = config["provider"]
+        scanner_cfg = config["scanner"]
+        yahoo = YahooDataProvider(
+            timeout_seconds=float(provider_cfg["yfinance_timeout_seconds"]),
+            batch_size=int(provider_cfg["yfinance_batch_size"]),
+        )
+        dhan = None
+        if args.source == "dhan":
+            dhan = DhanDataProvider(
+                client_id=required_env("DHAN_CLIENT_ID"),
+                access_token=required_env("DHAN_ACCESS_TOKEN"),
+                timeout_seconds=float(provider_cfg["dhan_timeout_seconds"]),
+                interval_minutes=int(scanner_cfg["interval_minutes"]),
+                lookback_days=int(provider_cfg["lookback_days"]),
+            )
+        datasets, errors = fetch_historical(
+            instruments=instruments,
+            start_date=args.start,
+            end_date=args.end,
+            source=args.source,
+            dhan=dhan,
+            yahoo=yahoo,
+            max_workers=int(scanner_cfg["max_workers"]),
+        )
+
+    records = evaluate_datasets(datasets, config["strategy"], config["filters"])
+    write_results_csv(records, args.results_csv)
+    generate_pdf_report(
+        records=records,
+        output_path=args.output_pdf,
+        start_date=args.start,
+        end_date=args.end,
+        requested_symbols=symbols,
+        datasets=datasets,
+        errors=errors,
+    )
+    LOGGER.info(
+        "Backtest complete: %d data set(s), %d signal(s), %d unavailable; wrote %s and %s",
+        len(datasets),
+        len(records),
+        len(errors),
+        args.output_pdf,
+        args.results_csv,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -166,7 +284,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     try:
         config = load_config(args.config)
-        status = _run_scan(args, config) if args.command == "scan" else _run_backtest(args, config)
+        if args.command == "scan":
+            status = _run_scan(args, config)
+        elif args.command == "backtest":
+            status = _run_backtest(args, config)
+        else:
+            status = _run_backtest_report(args, config)
     except KeyboardInterrupt:
         status = 130
     except Exception as exc:

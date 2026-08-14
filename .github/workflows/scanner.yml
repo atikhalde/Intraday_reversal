@@ -1,4 +1,4 @@
-name: Intraday scanner
+name: 1 - Intraday scanner
 
 on:
   workflow_dispatch:

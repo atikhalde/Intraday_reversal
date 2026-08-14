@@ -13,5 +13,6 @@ venv/
 .env.*
 !.env.example
 var/
+artifacts/
 *.log
 .DS_Store

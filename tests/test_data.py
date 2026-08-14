@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from reversal_scanner.data.common import DataFetchError, drop_incomplete_bars
 from reversal_scanner.data.coordinator import MarketDataCoordinator
+from reversal_scanner.historical import fetch_historical
 from reversal_scanner.models import Instrument
 
 
@@ -63,3 +64,40 @@ def test_incomplete_current_bar_is_removed() -> None:
     now = datetime(2026, 8, 14, 9, 27, tzinfo=ZoneInfo("Asia/Kolkata"))
     completed = drop_incomplete_bars(sample_frame(), now, 5)
     assert list(completed.index.strftime("%H:%M")) == ["09:15", "09:20"]
+
+
+class FailedHistoricalDhan:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fetch_range(self, instrument, start, end):  # noqa: ANN001, ANN201
+        self.calls += 1
+        raise DataFetchError("one failed attempt")
+
+
+class WorkingHistoricalYahoo:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fetch_range_many(self, instruments, start, end):  # noqa: ANN001, ANN201
+        self.calls += 1
+        return {instrument.symbol: sample_frame() for instrument in instruments}
+
+
+def test_historical_dhan_failure_immediately_uses_yahoo() -> None:
+    dhan = FailedHistoricalDhan()
+    yahoo = WorkingHistoricalYahoo()
+    instrument = Instrument("AAA", "1", "AAA.NS")
+    results, errors = fetch_historical(
+        instruments=[instrument],
+        start_date=date(2026, 8, 14),
+        end_date=date(2026, 8, 14),
+        source="dhan",
+        dhan=dhan,
+        yahoo=yahoo,
+        max_workers=1,
+    )
+    assert dhan.calls == 1
+    assert yahoo.calls == 1
+    assert results["AAA"][1] == "yfinance"
+    assert errors == {}

@@ -40,16 +40,33 @@ class DhanDataProvider:
     def fetch(self, instrument: Instrument, now: datetime) -> pd.DataFrame:
         timezone = ZoneInfo("Asia/Kolkata")
         local_now = now.replace(tzinfo=timezone) if now.tzinfo is None else now.astimezone(timezone)
-        start = (local_now - timedelta(days=self.lookback_days)).strftime("%Y-%m-%d 09:15:00")
-        end = local_now.strftime("%Y-%m-%d %H:%M:%S")
+        start = (local_now - timedelta(days=self.lookback_days)).replace(
+            hour=9,
+            minute=15,
+            second=0,
+            microsecond=0,
+        )
+        return self.fetch_range(instrument, start, local_now)
+
+    def fetch_range(
+        self,
+        instrument: Instrument,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        timezone = ZoneInfo("Asia/Kolkata")
+        local_start = (
+            start.replace(tzinfo=timezone) if start.tzinfo is None else start.astimezone(timezone)
+        )
+        local_end = end.replace(tzinfo=timezone) if end.tzinfo is None else end.astimezone(timezone)
         payload: dict[str, Any] = {
             "securityId": instrument.security_id,
             "exchangeSegment": "NSE_EQ",
             "instrument": "EQUITY",
             "interval": str(self.interval_minutes),
             "oi": False,
-            "fromDate": start,
-            "toDate": end,
+            "fromDate": local_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "toDate": local_end.strftime("%Y-%m-%d %H:%M:%S"),
         }
         headers = {
             "Accept": "application/json",
