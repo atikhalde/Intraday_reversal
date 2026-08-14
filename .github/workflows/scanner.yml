@@ -1,0 +1,66 @@
+name: Intraday scanner
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print signals instead of sending Telegram
+        required: true
+        default: true
+        type: boolean
+      max_symbols:
+        description: Optional symbol limit for a smoke test (0 = Nifty 500)
+        required: true
+        default: "0"
+        type: string
+  # One minute after each five-minute candle boundary. GitHub cron is
+  # best-effort and may be delayed; use --loop on an always-on host for live use.
+  schedule:
+    - cron: "1-56/5 3-10 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intraday-reversal-scanner
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
+      DHAN_ACCESS_TOKEN: ${{ secrets.DHAN_ACCESS_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install scanner
+        run: python -m pip install --upgrade pip && pip install .
+      - name: Validate secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DHAN_CLIENT_ID" || { echo "Missing DHAN_CLIENT_ID secret"; exit 1; }
+          test -n "$DHAN_ACCESS_TOKEN" || { echo "Missing DHAN_ACCESS_TOKEN secret"; exit 1; }
+          if [[ "$INPUT_DRY_RUN" != "true" ]]; then
+            test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing TELEGRAM_BOT_TOKEN secret"; exit 1; }
+            test -n "$TELEGRAM_CHAT_ID" || { echo "Missing TELEGRAM_CHAT_ID secret"; exit 1; }
+          fi
+      - name: Scan latest completed candles
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(scan --once --require-market-open)
+          if [[ "$INPUT_DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
+          if [[ "$INPUT_MAX_SYMBOLS" =~ ^[1-9][0-9]*$ ]]; then
+            args+=(--max-symbols "$INPUT_MAX_SYMBOLS")
+          fi
+          reversal-scanner "${args[@]}"
