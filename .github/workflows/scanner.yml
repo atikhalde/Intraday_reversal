@@ -3,8 +3,13 @@ name: 1 - Intraday scanner
 on:
   workflow_dispatch:
     inputs:
+      sample_alert:
+        description: Replay the ORCHPHARMA fixture and send a clearly marked Telegram test
+        required: true
+        default: false
+        type: boolean
       dry_run:
-        description: Print signals instead of sending Telegram
+        description: Print live-scan signals instead of sending Telegram
         required: true
         default: true
         type: boolean
@@ -42,6 +47,7 @@ jobs:
       DHAN_ACCESS_TOKEN: ${{ secrets.DHAN_ACCESS_TOKEN }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      INPUT_SAMPLE_ALERT: ${{ inputs.sample_alert || 'false' }}
       INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
       INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
       INPUT_PROVIDER: ${{ inputs.provider || 'dhan' }}
@@ -58,22 +64,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$INPUT_PROVIDER" == "dhan" ]]; then
+          if [[ "$INPUT_SAMPLE_ALERT" != "true" && "$INPUT_PROVIDER" == "dhan" ]]; then
             test -n "$DHAN_CLIENT_ID" || { echo "Missing DHAN_CLIENT_ID secret"; exit 1; }
             test -n "$DHAN_ACCESS_TOKEN" || { echo "Missing DHAN_ACCESS_TOKEN secret"; exit 1; }
           fi
-          if [[ "$INPUT_DRY_RUN" != "true" ]]; then
+          if [[ "$INPUT_SAMPLE_ALERT" == "true" || "$INPUT_DRY_RUN" != "true" ]]; then
             test -n "$TELEGRAM_BOT_TOKEN" || { echo "Missing TELEGRAM_BOT_TOKEN secret"; exit 1; }
             test -n "$TELEGRAM_CHAT_ID" || { echo "Missing TELEGRAM_CHAT_ID secret"; exit 1; }
           fi
-      - name: Scan latest completed candles
+      - name: Run intraday scanner or sample alert test
         shell: bash
         run: |
           set -euo pipefail
-          args=(scan --once --provider "$INPUT_PROVIDER")
-          if [[ "$EVENT_NAME" == "schedule" ]]; then args+=(--require-market-open); fi
-          if [[ "$INPUT_DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
-          if [[ "$INPUT_MAX_SYMBOLS" =~ ^[1-9][0-9]*$ ]]; then
-            args+=(--max-symbols "$INPUT_MAX_SYMBOLS")
+          if [[ "$INPUT_SAMPLE_ALERT" == "true" ]]; then
+            reversal-scanner backtest tests/fixtures/orchpharma_2026-06-16_5m.csv \
+              --symbol ORCHPHARMA \
+              --send-telegram-test
+          else
+            args=(scan --once --provider "$INPUT_PROVIDER")
+            if [[ "$EVENT_NAME" == "schedule" ]]; then args+=(--require-market-open); fi
+            if [[ "$INPUT_DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
+            if [[ "$INPUT_MAX_SYMBOLS" =~ ^[1-9][0-9]*$ ]]; then
+              args+=(--max-symbols "$INPUT_MAX_SYMBOLS")
+            fi
+            reversal-scanner "${args[@]}"
           fi
-          reversal-scanner "${args[@]}"

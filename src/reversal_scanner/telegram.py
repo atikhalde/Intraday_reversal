@@ -34,7 +34,7 @@ class TelegramNotifier:
             "Signal only—not financial advice. Wait for your execution rules."
         )
 
-    def send(self, signal: Signal) -> None:
+    def _send_text(self, text: str) -> None:
         # The token is necessarily in Telegram's bot URL; never log this URL or raw exceptions.
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
         try:
@@ -42,7 +42,7 @@ class TelegramNotifier:
                 url,
                 json={
                     "chat_id": self._chat_id,
-                    "text": self.format_signal(signal),
+                    "text": text,
                     "parse_mode": "HTML",
                     "disable_web_page_preview": True,
                 },
@@ -54,3 +54,13 @@ class TelegramNotifier:
                 raise RuntimeError("Telegram rejected the alert")
         except (requests.RequestException, ValueError) as exc:
             raise RuntimeError("Telegram alert delivery failed") from exc
+
+    def send(self, signal: Signal) -> None:
+        self._send_text(self.format_signal(signal))
+
+    def send_test(self, signal: Signal) -> None:
+        prefix = (
+            "🧪 <b>SAMPLE ALERT TEST — NOT A LIVE SIGNAL</b>\n"
+            "Historical ORCHPHARMA fixture replay follows.\n\n"
+        )
+        self._send_text(prefix + self.format_signal(signal))

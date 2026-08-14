@@ -5,17 +5,8 @@ from reversal_scanner.telegram import TelegramNotifier
 from reversal_scanner.universe import load_nifty500
 
 
-def test_bundled_universe_has_exactly_500_unique_mapped_stocks() -> None:
-    instruments = load_nifty500()
-    assert len(instruments) == 500
-    assert len({instrument.symbol for instrument in instruments}) == 500
-    assert all(instrument.security_id for instrument in instruments)
-    assert all(instrument.yfinance_symbol.endswith(".NS") for instrument in instruments)
-    assert "RELIANCE" in {instrument.symbol for instrument in instruments}
-
-
-def test_telegram_message_contains_actionable_structure() -> None:
-    signal = Signal(
+def sample_signal() -> Signal:
+    return Signal(
         symbol="ORCHPHARMA",
         timestamp=datetime(2026, 6, 16, 13, 35),
         pattern="spring-test-SOS",
@@ -31,8 +22,42 @@ def test_telegram_message_contains_actionable_structure() -> None:
         data_source="dhan",
         reasons=("swept sell-side liquidity", "higher-low test", "bullish displacement"),
     )
-    message = TelegramNotifier.format_signal(signal)
+
+
+def test_bundled_universe_has_exactly_500_unique_mapped_stocks() -> None:
+    instruments = load_nifty500()
+    assert len(instruments) == 500
+    assert len({instrument.symbol for instrument in instruments}) == 500
+    assert all(instrument.security_id for instrument in instruments)
+    assert all(instrument.yfinance_symbol.endswith(".NS") for instrument in instruments)
+    assert "RELIANCE" in {instrument.symbol for instrument in instruments}
+
+
+def test_telegram_message_contains_actionable_structure() -> None:
+    message = TelegramNotifier.format_signal(sample_signal())
     assert "ORCHPHARMA" in message
     assert "₹908.25" in message
     assert "₹899.80" in message
     assert "Data: dhan" in message
+
+
+def test_telegram_sample_alert_is_clearly_marked(monkeypatch) -> None:  # noqa: ANN001
+    captured: dict = {}
+
+    class SuccessfulResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"ok": True}
+
+    def fake_post(url, json, timeout):  # noqa: ANN001, ANN202
+        captured.update(url=url, json=json, timeout=timeout)
+        return SuccessfulResponse()
+
+    monkeypatch.setattr("reversal_scanner.telegram.requests.post", fake_post)
+    TelegramNotifier("test-token", "test-chat").send_test(sample_signal())
+    text = captured["json"]["text"]
+    assert "SAMPLE ALERT TEST — NOT A LIVE SIGNAL" in text
+    assert "Historical ORCHPHARMA fixture replay" in text
+    assert "CONFIRMED REVERSAL — ORCHPHARMA" in text

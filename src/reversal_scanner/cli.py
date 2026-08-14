@@ -50,6 +50,11 @@ def _parser() -> argparse.ArgumentParser:
     backtest.add_argument("csv", type=Path)
     backtest.add_argument("--symbol", required=True)
     backtest.add_argument("--datetime-column", default="datetime_IST")
+    backtest.add_argument(
+        "--send-telegram-test",
+        action="store_true",
+        help="Send the final fixture signal as a clearly marked Telegram test alert",
+    )
 
     report = subparsers.add_parser(
         "backtest-report",
@@ -164,6 +169,8 @@ def _run_backtest(args: argparse.Namespace, config: dict) -> int:
     frame.index = index
     signals = scan_history(args.symbol.upper(), frame, config["strategy"])
     if not signals:
+        if args.send_telegram_test:
+            raise RuntimeError("No fixture signal was available to send as a Telegram test")
         print("No confirmed reversal signals found.")
         return 0
     for signal in signals:
@@ -173,6 +180,13 @@ def _run_backtest(args: argparse.Namespace, config: dict) -> int:
             f"confirm={signal.confirmation_price:.2f} | pivot={signal.pivot_high:.2f} | "
             f"invalidation={signal.full_invalidation:.2f}"
         )
+    if args.send_telegram_test:
+        notifier = TelegramNotifier(
+            bot_token=required_env("TELEGRAM_BOT_TOKEN"),
+            chat_id=required_env("TELEGRAM_CHAT_ID"),
+        )
+        notifier.send_test(signals[-1])
+        LOGGER.info("Sent clearly marked Telegram fixture alert for %s", signals[-1].symbol)
     return 0
 
 
