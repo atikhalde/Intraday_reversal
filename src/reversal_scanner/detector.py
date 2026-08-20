@@ -69,6 +69,19 @@ def _median_positive(series: pd.Series, default: float) -> float:
     return float(positive.median()) if not positive.empty else default
 
 
+def _minutes_from_midnight(value: Any) -> int:  # noqa: ANN401
+    timestamp = pd.Timestamp(value)
+    return timestamp.hour * 60 + timestamp.minute
+
+
+def _confirmation_window_open(timestamp: Any, config: dict[str, Any]) -> bool:
+    """Only confirm mid-session: opening noise and closing squeeze lack follow-through."""
+    minutes = _minutes_from_midnight(timestamp)
+    start = pd.Timestamp(f"2000-01-01 {config['confirmation_window_start']}")
+    end = pd.Timestamp(f"2000-01-01 {config['confirmation_window_end']}")
+    return start.hour * 60 + start.minute <= minutes <= end.hour * 60 + end.minute
+
+
 def _find_test(
     bars: pd.DataFrame,
     spring_idx: int,
@@ -152,6 +165,13 @@ def _evaluate_spring(
     if decline_pct < float(cfg["min_decline_pct"]):
         return None
 
+    # The sweep must flush the whole move, not land mid-trend. The spring low
+    # has to sit within tolerance of the entire session's low so far.
+    session_low = float(bars.iloc[: spring_idx + 1].low.min())
+    session_low_limit = session_low * (1 + float(cfg["sweep_tolerance_pct"]) / 100)
+    if float(spring.low) > session_low_limit:
+        return None
+
     spring_metrics = _candle_metrics(spring)
     if spring_metrics["close_location"] < float(cfg["min_spring_close_location"]):
         return None
@@ -169,6 +189,19 @@ def _evaluate_spring(
         and spring_metrics["lower_wick_body_ratio"] >= float(cfg["spring_wick_body_ratio"])
     )
     stopping_volume = spring_volume_ratio >= float(cfg["stopping_volume_ratio"])
+    direct_hammer = spring_is_hammer and sos_idx - spring_idx <= int(
+        cfg["hammer_max_bars_to_sos"]
+    )
+    if direct_hammer:
+        # The fast hammer path is only trusted when the sweep candle carries
+        # stopping volume as well as rejection anatomy, and the displacement
+        # close breaks the hammer's own high.
+        if bool(cfg["hammer_requires_stopping_volume"]) and not stopping_volume:
+            return None
+        if bool(cfg["hammer_requires_spring_high_break"]) and float(sos.close) <= float(
+            spring.high
+        ):
+            return None
     if not (stopping_volume or spring_is_hammer):
         return None
 
@@ -177,7 +210,25 @@ def _evaluate_spring(
     if float(sos.close) <= pivot_high:
         return None
 
+    recovery_pct = _safe_ratio(pivot_high - float(spring.low), float(spring.low)) * 100
+    if recovery_pct < float(cfg["min_recovery_pct"]):
+        return None
+
+    # The displacement must actually reclaim the decline. Falling knives bounce
+    # shallowly; genuine demand takes back a meaningful part of the whole move.
+    reclaim_fraction = _safe_ratio(
+        float(sos.close) - float(spring.low),
+        context_high - float(spring.low),
+    )
+    if reclaim_fraction < float(cfg["min_reclaim_fraction_of_decline"]):
+        return None
+    reclaim_pct = _safe_ratio(float(sos.close) - float(spring.low), float(spring.low)) * 100
+    if reclaim_pct < float(cfg["min_reclaim_pct_of_price"]):
+        return None
+
     sos_metrics = _candle_metrics(sos)
+    if sos_metrics["close_location"] < float(cfg["sos_min_close_location"]):
+        return None
     sos_range_ratio = _safe_ratio(sos_metrics["range"], median_range)
     sos_volume_median = _median_positive(
         bars.iloc[max(0, sos_idx - volume_lookback):sos_idx].volume,
@@ -186,9 +237,11 @@ def _evaluate_spring(
     sos_volume_ratio = _safe_ratio(float(sos.volume), sos_volume_median)
     previous_volume = float(bars.iloc[sos_idx - 1].volume)
     sos_previous_volume_ratio = _safe_ratio(float(sos.volume), previous_volume, 99.0)
-    sos_volume_ok = (
-        sos_volume_ratio >= float(cfg["sos_min_volume_ratio"])
-        or sos_previous_volume_ratio >= float(cfg["sos_min_previous_volume_ratio"])
+    # Displacement must carry its own volume against the recent median; the
+    # comparison with the (often tiny) preceding test bar is only a bonus.
+    sos_volume_ok = sos_volume_ratio >= float(cfg["sos_min_volume_ratio"]) or (
+        bool(cfg["sos_allow_previous_volume_only"])
+        and sos_previous_volume_ratio >= float(cfg["sos_min_previous_volume_ratio"])
     )
     sos_ok = (
         float(sos.close) > float(sos.open)
@@ -199,6 +252,10 @@ def _evaluate_spring(
     if not sos_ok:
         return None
 
+    atr = _median_positive(
+        (bars.high - bars.low).iloc[max(0, sos_idx - 14) : sos_idx],
+        float(sos.high - sos.low),
+    )
     test_idx = _find_test(
         bars,
         spring_idx,
@@ -208,9 +265,16 @@ def _evaluate_spring(
         pivot_high,
         cfg,
     )
-    direct_hammer = spring_is_hammer and sos_idx - spring_idx <= 3
     if test_idx is None and not direct_hammer:
         return None
+    if test_idx is not None:
+        # Demand must keep holding after the test: no bar between the test and
+        # the displacement may trade back through the tested higher low.
+        test_low = float(bars.iloc[test_idx].low)
+        tolerance = atr * float(cfg["post_test_low_tolerance_atr"])
+        post_test = bars.iloc[test_idx + 1 : sos_idx]
+        if not post_test.empty and float(post_test.low.min()) < test_low - tolerance:
+            return None
     no_supply_idx = _find_no_supply(bars, test_idx, sos_idx, median_range, cfg)
 
     score = 15  # meaningful prior decline
@@ -260,6 +324,9 @@ def _evaluate_spring(
         reasons=reasons,
         metrics={
             "decline_pct": decline_pct,
+            "recovery_pct": recovery_pct,
+            "reclaim_fraction": reclaim_fraction,
+            "reclaim_pct": reclaim_pct,
             "prior_support": prior_support,
             "spring_volume_ratio": spring_volume_ratio,
             "spring_close_location": spring_metrics["close_location"],
@@ -292,15 +359,17 @@ def _sos_qualifies(frame: pd.DataFrame, sos_idx: int, config: dict[str, Any]) ->
         float(frame.iloc[sos_idx - 1].volume),
         99.0,
     )
+    volume_ok = volume_ratio >= float(config["sos_min_volume_ratio"]) or (
+        bool(config["sos_allow_previous_volume_only"])
+        and previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
+    )
     return (
         float(sos.close) > float(sos.open)
         and metrics["body_ratio"] >= float(config["sos_min_body_ratio"])
+        and metrics["close_location"] >= float(config["sos_min_close_location"])
         and _safe_ratio(metrics["range"], median_range)
         >= float(config["sos_min_range_ratio"])
-        and (
-            volume_ratio >= float(config["sos_min_volume_ratio"])
-            or previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
-        )
+        and volume_ok
     )
 
 
@@ -314,13 +383,21 @@ def _qualifying_sos_positions(frame: pd.DataFrame, config: dict[str, Any]) -> np
     ranges = highs - lows
     bodies = np.abs(closes - opens)
     body_ratios = np.divide(bodies, ranges, out=np.zeros_like(bodies), where=ranges > 0)
+    close_locations = np.divide(
+        closes - lows,
+        ranges,
+        out=np.full(len(frame), 0.5),
+        where=ranges > 0,
+    )
     qualifying = np.zeros(len(frame), dtype=bool)
     range_lookback = int(config["range_lookback_bars"])
     volume_lookback = int(config["volume_lookback_bars"])
 
     for index in range(1, len(frame)):
-        if closes[index] <= opens[index] or body_ratios[index] < float(
-            config["sos_min_body_ratio"]
+        if (
+            closes[index] <= opens[index]
+            or body_ratios[index] < float(config["sos_min_body_ratio"])
+            or close_locations[index] < float(config["sos_min_close_location"])
         ):
             continue
         prior_ranges = ranges[max(0, index - range_lookback) : index]
@@ -347,9 +424,11 @@ def _qualifying_sos_positions(frame: pd.DataFrame, config: dict[str, Any]) -> np
             float(volumes[index - 1]),
             99.0,
         )
-        qualifying[index] = (
-            volume_ratio >= float(config["sos_min_volume_ratio"])
-            or previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
+        qualifying[index] = volume_ratio >= float(
+            config["sos_min_volume_ratio"]
+        ) or (
+            bool(config["sos_allow_previous_volume_only"])
+            and previous_volume_ratio >= float(config["sos_min_previous_volume_ratio"])
         )
     return qualifying
 
@@ -367,6 +446,8 @@ def _detect_latest_session(
         return None
 
     sos_idx = len(frame) - 1
+    if not _confirmation_window_open(frame.index[sos_idx], config):
+        return None
     if check_sos and not _sos_qualifies(frame, sos_idx, config):
         return None
     first_spring = max(
@@ -389,8 +470,15 @@ def _detect_latest_session(
     ranges = frame.high - frame.low
     atr = _median_positive(ranges.iloc[max(0, sos_idx - 14) : sos_idx], float(sos.high - sos.low))
     buffer_value = atr * float(config["stop_atr_buffer"])
-    full_invalidation = max(0.0, float(spring.low) - buffer_value)
-    immediate_failure = min(candidate.pivot_high, float(sos.low))
+    # The working stop sits just below the most recent higher-low test; the
+    # hammer path falls back to the buffered spring low.
+    stop_anchor = (
+        float(frame.iloc[candidate.test_index].low)
+        if candidate.test_index is not None
+        else float(spring.low)
+    )
+    full_invalidation = max(0.0, stop_anchor - buffer_value)
+    immediate_failure = candidate.pivot_high
     risk = max(float(sos.close) - full_invalidation, atr * 0.1)
 
     timestamp = pd.Timestamp(frame.index[sos_idx]).to_pydatetime()
@@ -423,8 +511,9 @@ def detect_latest(
     """Detect a confirmed long reversal whose SOS is the final completed candle.
 
     The algorithm uses only data at or before the final candle. It accepts the
-    full spring -> higher-low test -> no-supply -> SOS sequence, as well as a
-    faster hammer -> SOS confirmation variant.
+    full spring -> higher-low test -> no-supply -> SOS sequence, as well as the
+    tightly gated hammer -> SOS confirmation variant. Confirmations are only
+    accepted inside the configured mid-session window.
     """
     frame = normalize_bars(bars)
     if frame.empty:
@@ -443,13 +532,19 @@ def scan_history(
     config: dict[str, Any],
     data_source: str = "csv",
 ) -> list[Signal]:
-    """Walk forward once per session without look-ahead and return every signal."""
+    """Walk forward once per session without look-ahead and return every signal.
+
+    At most one alert is emitted per symbol per session: the strongest
+    confirmation of the day. This keeps reversals rare and matches how the
+    setup is actually traded.
+    """
     frame = normalize_bars(bars)
     signals: list[Signal] = []
     first_confirmation = int(config["min_context_bars"]) + 1
     session_dates = pd.DatetimeIndex(frame.index).date
     for _session_date, session in frame.groupby(session_dates, sort=False):
         qualifying_sos = _qualifying_sos_positions(session, config)
+        best: Signal | None = None
         for end in range(first_confirmation, len(session)):
             if not qualifying_sos[end]:
                 continue
@@ -460,6 +555,10 @@ def scan_history(
                 data_source,
                 check_sos=False,
             )
-            if signal and (not signals or signal.key != signals[-1].key):
-                signals.append(signal)
+            if signal is None:
+                continue
+            if best is None or (signal.score, signal.timestamp) > (best.score, best.timestamp):
+                best = signal
+        if best is not None:
+            signals.append(best)
     return signals

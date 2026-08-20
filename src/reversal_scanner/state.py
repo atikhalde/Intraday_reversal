@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,24 @@ class SignalState:
 
     def contains(self, key: str) -> bool:
         return key in self.data
+
+    def count_on_date(self, day: date, key_prefix: str = "") -> int:
+        """Count entries whose recorded timestamp falls on ``day``.
+
+        ``key_prefix`` limits the count to one key family, e.g. the
+        ``day:<date>:`` budget keys, so unrelated entries are not counted.
+        """
+        total = 0
+        for key, value in self.data.items():
+            if key_prefix and not key.startswith(key_prefix):
+                continue
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+            if parsed.date() == day:
+                total += 1
+        return total
 
     def add(self, key: str, timestamp: datetime) -> None:
         self.data[key] = timestamp.isoformat()

@@ -274,7 +274,12 @@ def _run_backtest_report(args: argparse.Namespace, config: dict) -> int:
             max_workers=int(scanner_cfg["max_workers"]),
         )
 
-    records = evaluate_datasets(datasets, config["strategy"], config["filters"])
+    records = evaluate_datasets(
+        datasets,
+        config["strategy"],
+        config["filters"],
+        max_signals_per_day=int(config["scanner"]["max_signals_per_day"]),
+    )
     write_results_csv(records, args.results_csv)
     generate_pdf_report(
         records=records,

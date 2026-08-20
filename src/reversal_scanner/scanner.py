@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date as date_type
 from datetime import datetime, time, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -57,7 +58,6 @@ class ReversalScanner:
         dry_run: bool = False,
     ) -> tuple[list[Signal], dict[str, str]]:
         fetched, errors = self.coordinator.fetch_all(instruments, now)
-        signals: list[Signal] = []
         scanner_cfg = self.config["scanner"]
         strategy_cfg = self.config["strategy"]
         filters = self.config["filters"]
@@ -66,6 +66,7 @@ class ReversalScanner:
             if now.tzinfo is None
             else now.astimezone(ZoneInfo(scanner_cfg["market_timezone"]))
         )
+        candidates: list[Signal] = []
         for instrument in instruments:
             item = fetched.get(instrument.symbol)
             if item is None:
@@ -105,14 +106,55 @@ class ReversalScanner:
                 continue
             if self.state.contains(signal.key):
                 continue
+            # Reversals are rare by design: one alert per symbol per session.
+            day_symbol_key = f"day:{session_date.isoformat()}:{instrument.symbol}"
+            if self.state.contains(day_symbol_key):
+                continue
+            candidates.append(signal)
 
-            signals.append(signal)
+        signals = self._apply_daily_budget(candidates, local_now.date(), scanner_cfg)
+        for signal in signals:
             if dry_run:
                 print(json.dumps(signal.to_dict(), ensure_ascii=False))
                 continue
             if self.notifier is None:
                 raise RuntimeError("A notifier is required unless --dry-run is used")
             self.notifier.send(signal)
+            session_date = signal.timestamp.date()
             self.state.add(signal.key, signal.timestamp)
+            self.state.add(
+                f"day:{session_date.isoformat()}:{signal.symbol}",
+                signal.timestamp,
+            )
             LOGGER.info("Alerted %s at %s", signal.symbol, signal.timestamp.isoformat())
         return signals, errors
+
+    def _apply_daily_budget(
+        self,
+        candidates: list[Signal],
+        day: date_type,
+        scanner_cfg: dict,
+    ) -> list[Signal]:
+        """Keep only the strongest confirmations within the daily alert budget."""
+        if not candidates:
+            return []
+        budget = int(scanner_cfg.get("max_signals_per_day", 3))
+        already_alerted = self.state.count_on_date(day, key_prefix="day:")
+        remaining = max(0, budget - already_alerted)
+        if remaining == 0:
+            LOGGER.info(
+                "Daily alert budget exhausted (%d/%d); %d new confirmation(s) suppressed",
+                already_alerted,
+                budget,
+                len(candidates),
+            )
+            return []
+        strongest = sorted(candidates, key=lambda item: (-item.score, item.timestamp))
+        kept = strongest[:remaining]
+        if len(kept) < len(candidates):
+            LOGGER.info(
+                "Daily alert budget keeps %d of %d confirmation(s)",
+                len(kept),
+                len(candidates),
+            )
+        return kept
