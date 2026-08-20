@@ -141,10 +141,35 @@ def _passes_historical_filters(
     return turnover >= float(filters["min_session_turnover_inr"])
 
 
+def _cap_signals_per_day(
+    records: list[EvaluatedSignal],
+    max_signals_per_day: int,
+) -> list[EvaluatedSignal]:
+    """Keep only the strongest confirmations per calendar day.
+
+    Reversals are meant to be traded rarely. When more symbols confirm on the
+    same session than the daily budget allows, the highest-scoring setups win.
+    """
+    if max_signals_per_day <= 0:
+        return records
+    by_day: dict[pd.Timestamp, list[EvaluatedSignal]] = {}
+    for record in records:
+        by_day.setdefault(pd.Timestamp(record.signal.timestamp.date()), []).append(record)
+    kept: list[EvaluatedSignal] = []
+    for _day, day_records in by_day.items():
+        ranked = sorted(
+            day_records,
+            key=lambda item: (-item.signal.score, item.signal.timestamp, item.signal.symbol),
+        )
+        kept.extend(ranked[:max_signals_per_day])
+    return sorted(kept, key=lambda item: (item.signal.timestamp, item.signal.symbol))
+
+
 def evaluate_datasets(
     datasets: dict[str, tuple[pd.DataFrame, str]],
     strategy_config: dict,
     filters: dict | None = None,
+    max_signals_per_day: int | None = None,
 ) -> list[EvaluatedSignal]:
     evaluated: list[EvaluatedSignal] = []
     ordered_datasets = sorted(datasets.items())
@@ -160,7 +185,10 @@ def evaluate_datasets(
                 total,
                 len(evaluated),
             )
-    return sorted(evaluated, key=lambda item: (item.signal.timestamp, item.signal.symbol))
+    evaluated = sorted(evaluated, key=lambda item: (item.signal.timestamp, item.signal.symbol))
+    if max_signals_per_day is not None:
+        evaluated = _cap_signals_per_day(evaluated, max_signals_per_day)
+    return evaluated
 
 
 def write_results_csv(records: list[EvaluatedSignal], path: str | Path) -> Path:
@@ -424,9 +452,12 @@ def generate_pdf_report(
             Paragraph("Methodology and Limitations", styles["Heading2"]),
             Paragraph(
                 "Signals are generated walk-forward from completed five-minute candles. "
-                "The detector requires prior decline, a sell-side-liquidity sweep, stopping "
-                "volume or hammer rejection, a higher-low test or fast hammer path, and a "
-                "bullish displacement close above the local pivot. Configured price and running "
+                "The detector requires a deep prior decline, a sell-side-liquidity sweep that "
+                "flushes the session low, stopping volume or hammer rejection, a higher-low "
+                "test or tightly gated fast hammer path, and a bullish displacement close that "
+                "reclaims the decline above the local pivot. Confirmations are accepted only "
+                "mid-session. At most one signal per symbol per session is kept, and the daily "
+                "alert budget caps the number of trades per day. Configured price and running "
                 "session-turnover filters are applied at confirmation time. No future candle is "
                 "used to create a signal.",
                 styles["BodyText"],

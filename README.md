@@ -13,22 +13,25 @@ It also recognizes the faster **hammer/spring → full-bodied confirmation** var
 - **Immediate fallback:** each Dhan request has a one-second timeout, zero retries, and zero retry backoff. Failed symbols are passed straight to a single-attempt batched yfinance request with an isolated cache and hard per-batch deadline.
 - **No look-ahead:** only completed five-minute candles are analyzed.
 - **Walk-forward detector:** every historical test evaluates only information available at that candle.
+- **Rare by design:** confirmations are accepted only mid-session, only after a deep decline, a flushed session low, a reclaimed bounce, and strong displacement volume. At most **one alert per symbol per session** and a hard **portfolio budget of three alerts per day** (strongest setups win).
+- **Higher-low stop:** the working invalidation sits just below the most recent higher-low test (the spring low anchors the hammer path), keeping 1R targets close and realistic.
 - **Telegram alerts:** setup score, confirmation, broken pivot/retest level, immediate failure, full invalidation, and 1R/2R reference levels.
 - **Deduplication:** local signal keys are retained for seven days.
 - **Automation:** CI plus two clearly named operational workflows: live intraday scanning and past-data PDF backtesting.
 - **Backtest artifacts:** walk-forward signal outcomes, MFE/MAE in R, a readable PDF report, and a detailed CSV.
+- **Credential-free validation:** a deterministic regime-based market simulator (`reversal_scanner.simulation`) plus `scripts/validate_strategy.py` measure signal frequency and 1R/2R precision without any provider access.
 
 ## Pattern logic
 
-The scanner is a structural state machine, not a candlestick-name search.
+The scanner is a structural state machine, not a candlestick-name search. Every gate exists to keep alerts rare and precise; together they reject the overwhelming majority of candidate candles.
 
 ### 1. Context
 
-The stock must have declined by a configurable minimum percentage into the candidate low. This prevents every isolated green candle from being called a reversal.
+The stock must have declined by a configurable minimum percentage (default 2.5%) into the candidate low. Sub-2.5% dips on liquid Nifty 500 stocks are noise, not distribution.
 
 ### 2. Spring / failed breakdown
 
-The candidate low must sweep or marginally pierce the lowest low in the configured liquidity lookback. It must then show at least one of:
+The candidate low must sweep or marginally pierce the lowest low in the configured liquidity lookback **and** sit within sweep tolerance of the entire session's low so far — the flush must clear the whole move, not land mid-trend. It must then show at least one of:
 
 - stopping-volume expansion; or
 - hammer-like lower-wick rejection.
@@ -50,13 +53,21 @@ A narrow, lower-volume candle after the test earns a no-supply/LPS score compone
 
 The latest completed candle must:
 
-- close bullish;
+- close bullish and near its high (close location ≥ 0.75 of the range);
 - have a large body relative to its range;
 - expand versus the recent median range;
-- expand in volume versus the median or immediately preceding candle; and
-- close above the intervening local pivot.
+- carry at least double the recent median volume on its own — a pop that only looks big next to a tiny test bar is not displacement;
+- close above the intervening local pivot; and
+- reclaim a meaningful share of the whole decline, both as a fraction of the move and in absolute price terms (default ≥ 1.2% above the spring low). Shallow bounces in a live downtrend fail this gate.
 
 That close is treated as local CHoCH/BOS confirmation. The scanner does not claim that a later news-driven repricing was technically predictable.
+
+### 5. Rarity controls
+
+- Confirmations are accepted only inside the mid-session window (default 09:45–15:05 IST).
+- The higher-low test must hold: no bar between the test and the displacement may trade back through the tested low.
+- The fast hammer → SOS path is tightly gated: the sweep must carry stopping volume and the displacement must break the hammer's own high.
+- Walk-forward history keeps only the strongest confirmation per symbol per session, and both backtests and the live scanner cap alerts at `scanner.max_signals_per_day` (default 3) per trading day, highest score first.
 
 ## ORCHPHARMA regression result
 
@@ -65,10 +76,10 @@ The repository includes the 16 June 2026 five-minute fixture. The walk-forward d
 ```text
 2026-06-16 13:35:00 | ORCHPHARMA | spring-test-SOS | score=100 |
 spring=2026-06-16 13:05:00 @ 900.00 | confirm=917.35 |
-pivot=908.25 | invalidation=899.83
+pivot=908.25 | invalidation=899.88
 ```
 
-The later 14:55 news spike is not needed by or visible to the 13:35 decision.
+The working stop (899.88) sits just below the 13:25 higher-low test at 900.55; the later 14:55 news spike is not needed by or visible to the 13:35 decision.
 
 ## Local installation
 
@@ -220,12 +231,24 @@ Main safeguards:
 
 - minimum price: ₹20;
 - maximum price: ₹10,000;
-- minimum running session turnover: ₹1 crore;
+- minimum running session turnover: ₹2 crore;
 - last completed candle only;
 - maximum signal age: seven minutes;
-- complete structural invalidation below the buffered spring low.
+- confirmations only mid-session (default 09:45–15:05 IST), never in opening noise or the final squeeze;
+- one alert per symbol per session and a portfolio budget of three alerts per day;
+- working stop just below the most recent higher-low test (buffered), full invalidation anchored at the spring low on the hammer path.
 
 Thresholds should be recalibrated through out-of-sample walk-forward tests before live decision-making.
+
+## Validation without credentials
+
+`scripts/validate_strategy.py` replays a deterministic regime-based market (chop, trend, genuine reversal, and flawed or perfect bull traps) through the detector and reports signals-per-day, 1R/2R precision, and a regime breakdown:
+
+```bash
+python scripts/validate_strategy.py --days 30 --symbols 24 --seed 7
+```
+
+With the committed defaults this harness produces well under one alert per day on average, never more than three, with roughly four in five alerts reaching 1R before the higher-low stop — and virtually every genuine reversal structure captured. The simulator is deterministic per seed, so the harness doubles as a stable regression check when tuning thresholds.
 
 ## Refresh the Nifty 500 mapping
 
@@ -250,7 +273,11 @@ Tests cover:
 - the exact ORCHPHARMA 13:05–13:35 spring/test/SOS sequence;
 - no alert before 13:35;
 - no dependency on the later news spike;
-- the faster hammer-confirmation variant;
+- the faster hammer-confirmation variant, including its stopping-volume requirement;
+- zero false alerts across sixty simulated pure-chop sessions;
+- the mid-session confirmation window and the reclaim gate;
+- at most one signal per symbol per session;
+- the portfolio daily budget in backtests and the live scanner's budget plus per-symbol deduplication;
 - one-attempt Dhan → immediate Yahoo fallback behavior for live and historical ranges;
 - incomplete-candle removal;
 - PDF/CSV report generation and PDF parsing;

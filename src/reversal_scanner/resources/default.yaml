@@ -7,6 +7,9 @@ scanner:
   loop_boundary_delay_seconds: 2
   max_workers: 32
   state_file: var/sent_signals.json
+  # Hard portfolio-wide alert budget: the strongest signals win, up to this
+  # many per trading day. Reversals must stay rare (1-3 trades per day).
+  max_signals_per_day: 3
 
 provider:
   dhan_timeout_seconds: 1.0
@@ -20,27 +23,60 @@ strategy:
   range_lookback_bars: 20
   max_setup_bars: 10
   min_context_bars: 8
-  min_decline_pct: 1.8
+  # A meaningful intraday decline is required before any sweep can count.
+  # Sub-2.5% dips on liquid Nifty 500 stocks are noise, not distribution.
+  min_decline_pct: 2.5
   sweep_tolerance_pct: 0.05
-  min_spring_close_location: 0.25
-  stopping_volume_ratio: 1.50
+  # The sweep must flush the whole session move, and the decline must not have
+  # meaningfully retraced before the sweep (mid-trend "springs" are traps).
+  max_pre_spring_recovery_fraction: 0.12
+  min_spring_close_location: 0.30
+  stopping_volume_ratio: 1.80
   spring_wick_body_ratio: 1.50
+  # Demand must already have responded: the local pivot broken by the SOS must
+  # sit at least this far above the spring low (percent of price).
+  min_recovery_pct: 0.30
+  # The displacement close must reclaim at least this fraction of the entire
+  # decline from the session high to the spring low. Shallow bounces in a live
+  # downtrend (falling knives) fail this gate.
+  min_reclaim_fraction_of_decline: 0.10
+  # ...and it must reclaim a meaningful amount in price terms. Deep declines
+  # demand a large absolute reclaim; shallow ones must reclaim most of the move.
+  min_reclaim_pct_of_price: 1.20
   test_min_bars_after_spring: 2
   test_max_fraction_of_recovery: 0.55
   test_min_close_location: 0.55
   test_min_wick_body_ratio: 1.20
   test_max_spring_volume_ratio: 0.70
+  # After the higher-low test, no bar may trade back through the tested low
+  # (plus this small ATR tolerance) before displacement confirms.
+  post_test_low_tolerance_atr: 0.10
   no_supply_max_test_volume_ratio: 0.65
   no_supply_max_median_range_ratio: 0.85
-  sos_min_body_ratio: 0.65
-  sos_min_range_ratio: 1.35
-  sos_min_volume_ratio: 1.40
-  sos_min_previous_volume_ratio: 1.30
-  min_score: 65
-  stop_atr_buffer: 0.05
+  sos_min_body_ratio: 0.70
+  sos_min_range_ratio: 1.50
+  sos_min_volume_ratio: 2.00
+  sos_min_previous_volume_ratio: 1.40
+  # Displacement must close near its high; weak closes are not confirmation.
+  sos_min_close_location: 0.75
+  # Displacement volume must clear the recent median on its own. Passing only
+  # because the preceding test bar was tiny admits weak, low-conviction pops.
+  sos_allow_previous_volume_only: false
+  # The fast hammer path is only trusted with stopping volume on the sweep and
+  # a displacement close through the hammer's own high.
+  hammer_max_bars_to_sos: 3
+  hammer_requires_stopping_volume: true
+  hammer_requires_spring_high_break: true
+  min_score: 80
+  # Working stop buffer below the most recent higher-low test (or spring low
+  # on the hammer path), in multiples of the 14-bar median range.
+  stop_atr_buffer: 0.20
+  # Confirm only mid-session: the open is noise, the close lacks follow-through.
+  confirmation_window_start: "09:45"
+  confirmation_window_end: "15:05"
 
 filters:
   min_price: 20.0
   max_price: 10000.0
-  min_session_turnover_inr: 10000000
+  min_session_turnover_inr: 20000000
   alert_watch_stage: false
