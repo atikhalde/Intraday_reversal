@@ -14,7 +14,7 @@ dependencies = [
   "numpy>=1.26,<3",
   "pandas>=2.2,<4",
   "PyYAML>=6.0,<7",
-  "reportlab>=4.2,<5",
+  "reportlab>=4.2,<6",
   "requests>=2.32,<3",
   "yfinance>=0.2.65,<2",
 ]
