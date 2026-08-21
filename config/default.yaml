@@ -12,7 +12,10 @@ scanner:
   max_signals_per_day: 3
 
 provider:
-  dhan_timeout_seconds: 1.0
+  # A Dhan request gets one short attempt only. On a transport/API failure the
+  # coordinator starts the Yahoo fallback immediately; there are no retries or
+  # one-second backoff waits.
+  dhan_timeout_seconds: 0.25
   yfinance_timeout_seconds: 8.0
   lookback_days: 2
   yfinance_batch_size: 50

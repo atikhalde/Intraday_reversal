@@ -14,7 +14,11 @@ from .common import DataFetchError
 
 
 class DhanDataProvider:
-    """Thin no-retry client for Dhan's v2 intraday candle endpoint."""
+    """Thin single-attempt client for Dhan's v2 intraday candle endpoint.
+
+    ``timeout_seconds`` is deliberately sub-second by default. A failed attempt
+    is handed to the Yahoo fallback by the coordinator without retry or backoff.
+    """
 
     endpoint = "https://api.dhan.co/v2/charts/intraday"
 
@@ -22,7 +26,7 @@ class DhanDataProvider:
         self,
         client_id: str,
         access_token: str,
-        timeout_seconds: float = 1.0,
+        timeout_seconds: float = 0.25,
         interval_minutes: int = 5,
         lookback_days: int = 2,
         session: requests.Session | None = None,
