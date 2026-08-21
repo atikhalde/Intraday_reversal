@@ -10,7 +10,7 @@ It also recognizes the faster **hammer/spring → full-bodied confirmation** var
 
 - **Universe:** exactly 500 current Nifty 500 symbols, mapped to Dhan security IDs and Yahoo `.NS` symbols.
 - **Primary candles:** Dhan v2 five-minute intraday historical API.
-- **Immediate fallback:** each Dhan request has a one-second timeout, zero retries, and zero retry backoff. Failed symbols are passed straight to a single-attempt batched yfinance request with an isolated cache and hard per-batch deadline.
+- **Immediate fallback:** each Dhan request gets one 250 ms attempt, with zero retries and zero retry backoff. As each failure arrives, a single-attempt batched yfinance fallback starts while remaining Dhan requests are still in flight; Yahoo uses an isolated cache and hard per-batch deadline.
 - **No look-ahead:** only completed five-minute candles are analyzed.
 - **Walk-forward detector:** every historical test evaluates only information available at that candle.
 - **Rare by design:** confirmations are accepted only mid-session, only after a deep decline, a flushed session low, a reclaimed bounce, and strong displacement volume. At most **one alert per symbol per session** and a hard **portfolio budget of three alerts per day** (strongest setups win).

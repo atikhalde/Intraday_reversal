@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -43,7 +44,7 @@ class WorkingFallback:
         return {instrument.symbol: sample_frame() for instrument in instruments}
 
 
-def test_dhan_failure_falls_back_once_without_retry() -> None:
+def test_dhan_failure_falls_back_without_retry() -> None:
     primary = FailedPrimary()
     fallback = WorkingFallback()
     instruments = [
@@ -56,9 +57,57 @@ def test_dhan_failure_falls_back_once_without_retry() -> None:
         datetime(2026, 8, 14, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
     )
     assert sorted(primary.calls) == ["AAA", "BBB"]
-    assert fallback.calls == 1
+    # Failures can be grouped differently depending on which futures complete
+    # together, but each symbol gets only one Dhan attempt and one Yahoo path.
+    assert 1 <= fallback.calls <= len(instruments)
     assert set(results) == {"AAA", "BBB"}
     assert all(source == "yfinance" for _, source in results.values())
+    assert errors == {}
+
+
+class _FailAfterSlowPrimaryStarts:
+    """Make the ordering assertion deterministic across worker scheduling."""
+
+    def __init__(self) -> None:
+        self.slow_started = threading.Event()
+        self.slow_finished = threading.Event()
+
+    def fetch(self, instrument, now):  # noqa: ANN001, ANN201
+        if instrument.symbol == "AAA":
+            assert self.slow_started.wait(timeout=1)
+            raise DataFetchError("Dhan unavailable")
+        self.slow_started.set()
+        time.sleep(0.15)
+        self.slow_finished.set()
+        return sample_frame()
+
+
+class _ImmediateFallback:
+    def __init__(self, primary: _FailAfterSlowPrimaryStarts) -> None:
+        self.primary = primary
+        self.started_before_slow_dhan_finished = False
+
+    def fetch_many(self, instruments):  # noqa: ANN001, ANN201
+        self.started_before_slow_dhan_finished = not self.primary.slow_finished.is_set()
+        return {instrument.symbol: sample_frame() for instrument in instruments}
+
+
+def test_live_yahoo_fallback_starts_before_another_dhan_request_finishes() -> None:
+    primary = _FailAfterSlowPrimaryStarts()
+    fallback = _ImmediateFallback(primary)
+    instruments = [
+        Instrument("AAA", "1", "AAA.NS"),
+        Instrument("BBB", "2", "BBB.NS"),
+    ]
+
+    results, errors = MarketDataCoordinator(primary, fallback, max_workers=2).fetch_all(
+        instruments,
+        datetime(2026, 8, 14, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+    )
+
+    assert fallback.started_before_slow_dhan_finished
+    assert results["AAA"][1] == "yfinance"
+    assert results["BBB"][1] == "dhan"
     assert errors == {}
 
 
@@ -102,6 +151,55 @@ def test_historical_dhan_failure_immediately_uses_yahoo() -> None:
     assert dhan.calls == 1
     assert yahoo.calls == 1
     assert results["AAA"][1] == "yfinance"
+    assert errors == {}
+
+
+class _HistoricalFailAfterSlowDhanStarts:
+    def __init__(self) -> None:
+        self.slow_started = threading.Event()
+        self.slow_finished = threading.Event()
+
+    def fetch_range(self, instrument, start, end):  # noqa: ANN001, ANN201
+        if instrument.symbol == "AAA":
+            assert self.slow_started.wait(timeout=1)
+            raise DataFetchError("Dhan unavailable")
+        self.slow_started.set()
+        time.sleep(0.15)
+        self.slow_finished.set()
+        return sample_frame()
+
+
+class _ImmediateHistoricalYahoo:
+    def __init__(self, dhan: _HistoricalFailAfterSlowDhanStarts) -> None:
+        self.dhan = dhan
+        self.started_before_slow_dhan_finished = False
+
+    def fetch_range_many(self, instruments, start, end):  # noqa: ANN001, ANN201
+        self.started_before_slow_dhan_finished = not self.dhan.slow_finished.is_set()
+        return {instrument.symbol: sample_frame() for instrument in instruments}
+
+
+def test_historical_yahoo_fallback_starts_before_another_dhan_request_finishes() -> None:
+    dhan = _HistoricalFailAfterSlowDhanStarts()
+    yahoo = _ImmediateHistoricalYahoo(dhan)
+    instruments = [
+        Instrument("AAA", "1", "AAA.NS"),
+        Instrument("BBB", "2", "BBB.NS"),
+    ]
+
+    results, errors = fetch_historical(
+        instruments=instruments,
+        start_date=date(2026, 8, 14),
+        end_date=date(2026, 8, 14),
+        source="dhan",
+        dhan=dhan,
+        yahoo=yahoo,
+        max_workers=2,
+    )
+
+    assert yahoo.started_before_slow_dhan_finished
+    assert results["AAA"][1] == "yfinance"
+    assert results["BBB"][1] == "dhan"
     assert errors == {}
 
 
